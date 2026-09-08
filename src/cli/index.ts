@@ -1,8 +1,9 @@
 import * as path from 'node:path';
-import { S3Manager } from '../S3Manager';
+import { createS3Manager, S3Manager } from '../S3Manager';
 import { NodeFileSystemAdapter } from '../adapters/NodeFileSystemAdapter';
-import { assertCredentials, PluginDataJson, resolveConfig } from '../core/config';
-import { errorMessage, exitCodeOf, S3SyncError } from '../core/errors';
+import { assertCredentials, PluginDataJson, resolveConfig, ResolvedSyncConfig } from '../core/config';
+import { ConfigError, errorMessage, exitCodeOf, S3SyncError } from '../core/errors';
+import { stripS3Prefix } from '../core/fs';
 import { SyncEngine, SyncResult } from '../core/SyncEngine';
 import { SyncLedger } from '../core/SyncLedger';
 import { CliArgs, formatHelp, parseArgs } from './parseArgs';
@@ -39,12 +40,26 @@ export async function runCli(
     try {
         const vaultPath = path.resolve(args.vault ?? process.cwd());
         const fs = new NodeFileSystemAdapter(vaultPath);
-        const pluginDir = await resolvePluginDir(vaultPath, args.pluginDir, (p) => fs.exists(p));
-        const data = await loadPluginData(fs, path.join(pluginDir, 'data.json'));
+
+        let pluginDir: string | null = null;
+        let data: PluginDataJson | null = null;
+        try {
+            pluginDir = await resolvePluginDir(vaultPath, args.pluginDir, (p) => fs.exists(p));
+            data = await loadPluginData(fs, path.join(pluginDir, 'data.json'));
+        } catch (error: unknown) {
+            if (args.command !== 'test' || args.pluginDir) {
+                throw error;
+            }
+        }
+
         const config = resolveConfig({ flags: args, env, data });
 
         if (args.command === 'test') {
             return await runTest(config, io, args.json);
+        }
+
+        if (!pluginDir) {
+            throw new ConfigError('Plugin directory not found.');
         }
 
         assertCredentials(config);
@@ -53,17 +68,10 @@ export async function runCli(
         const ledger = new SyncLedger(fs, ledgerRel);
         await ledger.load();
 
-        const s3 = new S3Manager({
-            endpoint: config.endpoint,
-            region: config.region,
-            bucket: config.bucket,
-            accessKeyId: config.accessKeyId,
-            secretAccessKey: config.secretAccessKey,
-            prefix: config.prefix,
-        });
+        const s3 = createS3Manager(config);
 
         if (args.command === 'status') {
-            return await runStatus(s3, ledger, io);
+            return await runStatus(s3, ledger, io, args.json);
         }
 
         return await runSync(s3, ledger, fs, config, args, io);
@@ -79,7 +87,7 @@ async function loadPluginData(fs: NodeFileSystemAdapter, dataPath: string): Prom
     try {
         return JSON.parse(await fs.read(dataPath)) as PluginDataJson;
     } catch {
-        return null;
+        throw new ConfigError(`Failed to parse plugin data at ${dataPath}`);
     }
 }
 
@@ -87,7 +95,7 @@ async function runSync(
     s3: S3Manager,
     ledger: SyncLedger,
     fs: NodeFileSystemAdapter,
-    config: ReturnType<typeof resolveConfig>,
+    config: ResolvedSyncConfig,
     args: CliArgs,
     io: CliIo
 ): Promise<number> {
@@ -109,14 +117,14 @@ async function runSync(
         result = await engine.run();
     } catch (error: unknown) {
         if (args.json) {
-            const payload: SyncResult & { error: string } = {
+            io.log(JSON.stringify({
                 downloaded: [],
                 skippedCount: 0,
                 failed: [],
                 success: false,
+                dryRun: args.dryRun,
                 error: errorMessage(error),
-            };
-            io.log(JSON.stringify(payload));
+            }));
         }
         throw error;
     }
@@ -143,7 +151,12 @@ async function runSync(
     return 0;
 }
 
-async function runStatus(s3: S3Manager, ledger: SyncLedger, io: CliIo): Promise<number> {
+async function runStatus(
+    s3: S3Manager,
+    ledger: SyncLedger,
+    io: CliIo,
+    json: boolean
+): Promise<number> {
     let objects: { key: string; etag: string }[];
     try {
         objects = await s3.listObjects();
@@ -151,7 +164,24 @@ async function runStatus(s3: S3Manager, ledger: SyncLedger, io: CliIo): Promise<
         throw new S3SyncError(errorMessage(error));
     }
 
-    const pending = objects.filter(obj => !ledger.isSynced(obj.key, obj.etag));
+    const pending = objects.filter(obj => {
+        const relative = stripS3Prefix(obj.key, s3.prefix);
+        if (relative === null || relative === '' || relative.endsWith('/')) return false;
+        return !ledger.isSynced(obj.key, obj.etag);
+    });
+
+    if (json) {
+        io.log(JSON.stringify({
+            ledgerCount: ledger.count(),
+            objectCount: objects.length,
+            pending: pending.map(obj => ({
+                key: obj.key,
+                reason: ledger.getSyncedKeys()[obj.key] ? 'etag changed' : 'new',
+            })),
+        }));
+        return 0;
+    }
+
     io.log(`Ledger: ${ledger.count()} synced keys`);
     io.log(`S3 objects: ${objects.length}`);
     io.log(`Pending: ${pending.length}`);
@@ -163,7 +193,7 @@ async function runStatus(s3: S3Manager, ledger: SyncLedger, io: CliIo): Promise<
 }
 
 async function runTest(
-    config: ReturnType<typeof resolveConfig>,
+    config: ResolvedSyncConfig,
     io: CliIo,
     json: boolean
 ): Promise<number> {
@@ -176,19 +206,16 @@ async function runTest(
         throw error;
     }
 
-    const s3 = new S3Manager({
-        endpoint: config.endpoint,
-        region: config.region,
-        bucket: config.bucket,
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-        prefix: config.prefix,
-    });
+    const s3 = createS3Manager(config);
 
     try {
         await s3.testConnection();
     } catch (error: unknown) {
-        throw new S3SyncError(errorMessage(error));
+        const wrapped = new S3SyncError(errorMessage(error));
+        if (json) {
+            io.log(JSON.stringify({ success: false, error: wrapped.message }));
+        }
+        throw wrapped;
     }
 
     if (json) {

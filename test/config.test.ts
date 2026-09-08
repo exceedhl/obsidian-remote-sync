@@ -147,8 +147,12 @@ describe('resolvePluginDir', () => {
     const dev = '/vault/.obsidian/plugins/remote-sync';
 
     it('uses --plugin-dir first (relative to vault)', async () => {
-        const dir = await resolvePluginDir(vault, 'custom/plugin', async () => false);
+        const dir = await resolvePluginDir(vault, 'custom/plugin', async (p) => p === '/vault/custom/plugin');
         expect(dir).toBe('/vault/custom/plugin');
+    });
+
+    it('rejects a missing explicit plugin directory', async () => {
+        await expect(resolvePluginDir(vault, 'missing', async () => false)).rejects.toBeInstanceOf(ConfigError);
     });
 
     it('prefers market directory over dev directory', async () => {

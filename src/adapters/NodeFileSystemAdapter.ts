@@ -1,8 +1,8 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import { FileSystemAdapter } from '../core/fs';
+import { FileContent, SyncFsAdapter, WriteOptions } from '../core/fs';
 
-export class NodeFileSystemAdapter implements FileSystemAdapter {
+export class NodeFileSystemAdapter implements SyncFsAdapter {
     constructor(private readonly root: string) {}
 
     private resolve(p: string): string {
@@ -23,8 +23,12 @@ export class NodeFileSystemAdapter implements FileSystemAdapter {
         return fs.readFile(this.resolve(p), 'utf8');
     }
 
-    async write(p: string, content: string): Promise<void> {
-        await fs.writeFile(this.resolve(p), content, 'utf8');
+    async write(p: string, content: FileContent, options?: WriteOptions): Promise<void> {
+        await fs.writeFile(
+            this.resolve(p),
+            content,
+            options?.exclusive ? { flag: 'wx' } : undefined
+        );
     }
 
     async mkdir(p: string): Promise<void> {
@@ -42,5 +46,9 @@ export class NodeFileSystemAdapter implements FileSystemAdapter {
         } catch {
             return false;
         }
+    }
+
+    async remove(p: string): Promise<void> {
+        await fs.unlink(this.resolve(p));
     }
 }

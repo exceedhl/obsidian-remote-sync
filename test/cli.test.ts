@@ -16,7 +16,14 @@ vi.mock('../src/S3Manager', () => ({
         listObjects = s3Mocks.listObjects;
         getObject = s3Mocks.getObject;
         testConnection = s3Mocks.testConnection;
+        prefix = '';
     },
+    createS3Manager: (config: { prefix?: string }) => ({
+        listObjects: s3Mocks.listObjects,
+        getObject: s3Mocks.getObject,
+        testConnection: s3Mocks.testConnection,
+        prefix: config.prefix ?? '',
+    }),
 }));
 
 describe('runCli', () => {
@@ -85,6 +92,7 @@ describe('runCli', () => {
             skippedCount: 0,
             failed: [],
             success: true,
+            dryRun: true,
         });
         expect(s3Mocks.getObject).not.toHaveBeenCalled();
     });
@@ -116,5 +124,77 @@ describe('runCli', () => {
         const code = await runCli(['test', '--vault', vault], {}, io);
         expect(code).toBe(0);
         expect(logs[0]).toMatch(/successful/);
+    });
+
+    it('test can run from flags without a plugin directory', async () => {
+        s3Mocks.testConnection.mockResolvedValue(undefined);
+        const code = await runCli([
+            'test',
+            '--vault', vault,
+            '--endpoint', 'https://s3.example',
+            '--bucket', 'notes',
+            '--access-key', 'ak',
+            '--secret-key', 'sk',
+        ], {}, io);
+        expect(code).toBe(0);
+        expect(s3Mocks.testConnection).toHaveBeenCalled();
+    });
+
+    it('returns 1 when an explicit plugin dir is missing', async () => {
+        const code = await runCli(['test', '--vault', vault, '--plugin-dir', 'missing'], {}, io);
+        expect(code).toBe(1);
+        expect(errors[0]).toMatch(/Plugin directory not found/);
+    });
+
+    it('status lists pending keys and ignores prefix placeholders', async () => {
+        await writePluginData('remote-sync');
+        s3Mocks.listObjects.mockResolvedValue([
+            { key: 'notes/', etag: 'd41' },
+            { key: 'notes/a.md', etag: 't1' },
+        ]);
+
+        const code = await runCli(['status', '--vault', vault], {}, io);
+        expect(code).toBe(0);
+        expect(logs.join('\n')).toMatch(/Pending: 1/);
+        expect(logs.join('\n')).toMatch(/notes\/a.md/);
+        expect(logs.join('\n')).not.toMatch(/notes\/ \(/);
+    });
+
+    it('returns 3 when a local path exists but is not a folder', async () => {
+        await writePluginData('remote-sync');
+        await writeFile(path.join(vault, 'Inbox'), 'not-a-folder');
+        s3Mocks.listObjects.mockResolvedValue([{ key: 'notes/a.md', etag: 't1' }]);
+        s3Mocks.getObject.mockResolvedValue('body');
+
+        const code = await runCli(['--vault', vault], {}, io);
+        expect(code).toBe(3);
+    });
+
+    it('returns 3 when ledger.json is corrupt', async () => {
+        await writePluginData('remote-sync');
+        await writeFile(
+            path.join(vault, '.obsidian', 'plugins', 'remote-sync', 'ledger.json'),
+            '{not-json',
+            'utf8'
+        );
+
+        const code = await runCli(['--vault', vault], {}, io);
+        expect(code).toBe(3);
+        expect(errors[0]).toMatch(/Failed to parse ledger/);
+    });
+
+    it('returns 1 when a fresh sync lock exists', async () => {
+        await writePluginData('remote-sync');
+        await writeFile(
+            path.join(vault, '.obsidian', 'plugins', 'remote-sync', 'ledger.json.lock'),
+            JSON.stringify({ updatedAt: Date.now() }),
+            'utf8'
+        );
+        s3Mocks.listObjects.mockResolvedValue([{ key: 'notes/a.md', etag: 't1' }]);
+
+        const code = await runCli(['--vault', vault], {}, io);
+        expect(code).toBe(1);
+        expect(errors[0]).toMatch(/already in progress/);
+        expect(s3Mocks.getObject).not.toHaveBeenCalled();
     });
 });

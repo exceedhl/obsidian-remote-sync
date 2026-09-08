@@ -55,15 +55,19 @@ describe('SyncLedger (core)', () => {
         expect(reloaded.isSynced('notes/b.md', 'etag-2')).toBe(true);
     });
 
-    it('treats a missing or corrupt file as an empty ledger', async () => {
+    it('treats a missing file as an empty ledger', async () => {
         const mem = new MemoryFs();
         const missing = new SyncLedger(mem, 'plugin/ledger.json');
         await missing.load();
         expect(missing.count()).toBe(0);
+    });
 
+    it('refuses to load or overwrite a corrupt ledger', async () => {
+        const mem = new MemoryFs();
         mem.files.set('plugin/ledger.json', '{not-json');
         const corrupt = new SyncLedger(mem, 'plugin/ledger.json');
-        await corrupt.load();
-        expect(corrupt.count()).toBe(0);
+        await expect(corrupt.load()).rejects.toThrow('Failed to parse ledger');
+        await expect(corrupt.save()).rejects.toThrow('Refusing to overwrite a corrupt ledger');
+        expect(mem.files.get('plugin/ledger.json')).toBe('{not-json');
     });
 });

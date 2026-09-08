@@ -1,7 +1,7 @@
 import { Plugin, Notice } from 'obsidian';
 import { S3RemoteSyncSettingTab } from './src/SettingsTab';
 import { SyncEngine } from './src/SyncEngine';
-import { S3Manager } from './src/S3Manager';
+import { createS3Manager } from './src/S3Manager';
 import { SyncLedger } from './src/SyncLedger';
 import { SecretManager } from './src/SecretManager';
 
@@ -30,13 +30,22 @@ export default class S3RemoteSync extends Plugin {
     ledger!: SyncLedger;
     secretManager!: SecretManager;
     syncIntervalReference: number | null = null;
+    private syncInFlight = false;
+    private ledgerReady = false;
 
     async onload() {
         console.log('S3 Remote Sync plugin loading...');
         await this.loadSettings();
 
         this.ledger = new SyncLedger(this);
-        await this.ledger.load();
+        try {
+            await this.ledger.load();
+            this.ledgerReady = true;
+        } catch (e: unknown) {
+            const message = e instanceof Error ? e.message : String(e);
+            console.error('S3 Sync: Failed to load ledger.json:', e);
+            new Notice(`S3 Sync: Failed to load ledger.json: ${message}`);
+        }
 
         this.secretManager = new SecretManager(this.app, this);
 
@@ -65,6 +74,13 @@ export default class S3RemoteSync extends Plugin {
      * Main sync execution logic
      */
     async runSync() {
+        if (this.syncInFlight) return;
+        if (!this.ledgerReady) {
+            new Notice('S3 Sync: ledger.json is unusable; fix or restore it before syncing.');
+            return;
+        }
+
+        this.syncInFlight = true;
         try {
             const ak = await this.secretManager.loadSecret('access-key-id');
             const sk = await this.secretManager.loadSecret('secret-access-key');
@@ -74,24 +90,27 @@ export default class S3RemoteSync extends Plugin {
                 return;
             }
 
-            const s3 = new S3Manager({
-                ...this.settings,
+            const s3 = createS3Manager({
+                endpoint: this.settings.endpoint,
+                region: this.settings.region,
+                bucket: this.settings.bucket,
                 accessKeyId: ak,
                 secretAccessKey: sk,
                 prefix: this.settings.s3Prefix
             });
 
             const engine = new SyncEngine(this.app, s3, this.ledger, {
-                ...this.settings,
+                localBasePath: this.settings.localBasePath,
                 prefix: this.settings.s3Prefix,
                 force: this.settings.forceReDownload
             });
 
             new Notice('S3 Sync: Starting...');
             await engine.run();
-
-        } catch (e: any) {
+        } catch (e: unknown) {
             console.error('S3 Sync Error:', e);
+        } finally {
+            this.syncInFlight = false;
         }
     }
 

@@ -17,9 +17,9 @@ export interface CliArgs {
     json: boolean;
 }
 
-const COMMANDS = new Set<CliCommand>(['run', 'status', 'test']);
+const COMMANDS = new Set<string>(['run', 'status', 'test']);
 
-const VALUE_FLAGS: Record<string, keyof CliArgs> = {
+const VALUE_FLAGS: Record<string, keyof Pick<CliArgs, 'vault' | 'pluginDir' | 'endpoint' | 'region' | 'bucket' | 'prefix' | 'accessKey' | 'secretKey' | 'localBasePath'>> = {
     '--vault': 'vault',
     '--plugin-dir': 'pluginDir',
     '--endpoint': 'endpoint',
@@ -31,7 +31,7 @@ const VALUE_FLAGS: Record<string, keyof CliArgs> = {
     '--local-base-path': 'localBasePath',
 };
 
-const BOOL_FLAGS: Record<string, keyof CliArgs> = {
+const BOOL_FLAGS: Record<string, keyof Pick<CliArgs, 'dryRun' | 'force' | 'json' | 'help'>> = {
     '--dry-run': 'dryRun',
     '--force': 'force',
     '--json': 'json',
@@ -51,7 +51,7 @@ export function parseArgs(argv: string[]): CliArgs {
     let i = 0;
     if (argv[0] && !argv[0].startsWith('-')) {
         const maybeCommand = argv[0];
-        if (COMMANDS.has(maybeCommand as CliCommand)) {
+        if (COMMANDS.has(maybeCommand)) {
             args.command = maybeCommand as CliCommand;
             i = 1;
         } else {
@@ -65,18 +65,20 @@ export function parseArgs(argv: string[]): CliArgs {
         const flag = eq === -1 ? token : token.slice(0, eq);
         const inline = eq === -1 ? undefined : token.slice(eq + 1);
 
-        if (BOOL_FLAGS[flag]) {
-            (args as unknown as Record<string, unknown>)[BOOL_FLAGS[flag]] = true;
+        const boolKey = BOOL_FLAGS[flag];
+        if (boolKey) {
+            args[boolKey] = true;
             i++;
             continue;
         }
 
-        if (VALUE_FLAGS[flag]) {
+        const valueKey = VALUE_FLAGS[flag];
+        if (valueKey) {
             const value = inline !== undefined ? inline : argv[++i];
             if (value === undefined || value.startsWith('-')) {
                 throw new Error(`Missing value for ${flag}`);
             }
-            (args as unknown as Record<string, unknown>)[VALUE_FLAGS[flag]] = value;
+            args[valueKey] = value;
             i++;
             continue;
         }
@@ -112,10 +114,10 @@ Options:
   --local-base-path <path>  Vault-relative download root
   --dry-run                 List pending downloads only
   --force                   Ignore ledger and re-download
-  --json                    Structured output (run)
+  --json                    Structured output
   --help                    Show this help
 
-Exit codes: 0 ok (including nothing new) | 1 missing config | 2 S3 error | 3 local write error
+Exit codes: 0 ok (including nothing new) | 1 missing config / lock | 2 S3 error | 3 local write error
 
 Config priority: CLI flags > S3_*/AWS_* env > vault data.json XOR secrets
 Plugin dir: --plugin-dir > .../obsidian-s3-remote-sync > .../remote-sync

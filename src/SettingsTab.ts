@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import S3RemoteSync from '../main';
-import { S3Manager } from './S3Manager';
+import { createS3Manager } from './S3Manager';
 import { SecretManager } from './SecretManager';
 
 export class S3RemoteSyncSettingTab extends PluginSettingTab {
@@ -122,8 +122,10 @@ export class S3RemoteSyncSettingTab extends PluginSettingTab {
                         const sk = await this.secretManager.loadSecret('secret-access-key');
                         if (!ak || !sk) throw new Error('Missing AK/SK');
 
-                        const s3 = new S3Manager({
-                            ...this.plugin.settings,
+                        const s3 = createS3Manager({
+                            endpoint: this.plugin.settings.endpoint,
+                            region: this.plugin.settings.region,
+                            bucket: this.plugin.settings.bucket,
                             accessKeyId: ak,
                             secretAccessKey: sk,
                             prefix: this.plugin.settings.s3Prefix

@@ -24,9 +24,11 @@ describe('SyncEngine', () => {
             vault: {
                 adapter: {
                     write: vi.fn().mockResolvedValue(undefined),
+                    writeBinary: vi.fn().mockResolvedValue(undefined),
                     read: vi.fn(),
                     exists: vi.fn().mockResolvedValue(false),
                     rename: vi.fn().mockResolvedValue(undefined),
+                    remove: vi.fn().mockResolvedValue(undefined),
                 },
                 getAbstractFileByPath: vi.fn(),
                 createFolder: vi.fn().mockResolvedValue(undefined),
@@ -105,7 +107,10 @@ describe('SyncEngine', () => {
             { key: 'notes/changed.md', etag: 'new-tag' }
         ]);
         mockS3.getObject.mockResolvedValue('new content');
-        mockApp.vault.getAbstractFileByPath.mockReturnValue(new ObsidianTFolder());
+        mockApp.vault.getAbstractFileByPath.mockImplementation((p: string) => {
+            if (p === 'Inbox' || p.startsWith('Inbox/')) return new ObsidianTFolder();
+            return null;
+        });
 
         await syncEngine.run();
 
@@ -124,7 +129,10 @@ describe('SyncEngine', () => {
         mockS3.listObjects.mockResolvedValue([{ key: 'notes/conflict.md', etag: 'tag' }]);
 
         // Mock that a file exists where a folder should be
-        mockApp.vault.getAbstractFileByPath.mockReturnValue({}); // Simple object, not TFolder instance
+        mockApp.vault.getAbstractFileByPath.mockImplementation((p: string) => {
+            if (p === 'Inbox') return {};
+            return null;
+        });
 
         await expect(syncEngine.run()).rejects.toThrow('exists but is not a folder');
     });

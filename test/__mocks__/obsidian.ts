@@ -4,6 +4,10 @@ export const App = vi.fn();
 export const Notice = vi.fn();
 export class TFolder { }
 export const normalizePath = (path: string) => path;
+export class DataAdapter {
+    writeBinary = vi.fn();
+    remove = vi.fn();
+}
 export class Plugin {
     app: any;
     manifest: any;

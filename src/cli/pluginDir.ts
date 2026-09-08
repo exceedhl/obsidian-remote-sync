@@ -20,9 +20,13 @@ export async function resolvePluginDir(
     exists: ExistsFn
 ): Promise<string> {
     if (explicitPluginDir) {
-        return path.isAbsolute(explicitPluginDir)
+        const resolved = path.isAbsolute(explicitPluginDir)
             ? explicitPluginDir
             : path.resolve(vaultPath, explicitPluginDir);
+        if (!(await exists(resolved))) {
+            throw new ConfigError(`Plugin directory not found: ${resolved}`);
+        }
+        return resolved;
     }
 
     const { market, dev } = pluginDirCandidates(vaultPath);

@@ -1,7 +1,7 @@
 import { App, TFolder } from 'obsidian';
-import { FileSystemAdapter } from '../core/fs';
+import { FileContent, SyncFsAdapter, WriteOptions } from '../core/fs';
 
-export class ObsidianVaultAdapter implements FileSystemAdapter {
+export class ObsidianVaultAdapter implements SyncFsAdapter {
     constructor(private readonly app: App) {}
 
     async exists(path: string): Promise<boolean> {
@@ -13,8 +13,19 @@ export class ObsidianVaultAdapter implements FileSystemAdapter {
         return this.app.vault.adapter.read(path);
     }
 
-    async write(path: string, content: string): Promise<void> {
-        await this.app.vault.adapter.write(path, content);
+    async write(path: string, content: FileContent, options?: WriteOptions): Promise<void> {
+        if (options?.exclusive && await this.exists(path)) {
+            throw new Error(`EEXIST: ${path}`);
+        }
+        if (typeof content === 'string') {
+            await this.app.vault.adapter.write(path, content);
+            return;
+        }
+        const buffer = content.buffer.slice(
+            content.byteOffset,
+            content.byteOffset + content.byteLength
+        ) as ArrayBuffer;
+        await this.app.vault.adapter.writeBinary(path, buffer);
     }
 
     async mkdir(path: string): Promise<void> {
@@ -29,5 +40,9 @@ export class ObsidianVaultAdapter implements FileSystemAdapter {
         const file = this.app.vault.getAbstractFileByPath(path);
         if (file) return file instanceof TFolder;
         return false;
+    }
+
+    async remove(path: string): Promise<void> {
+        await this.app.vault.adapter.remove(path);
     }
 }

@@ -3,7 +3,7 @@
     "name": "S3 Remote Sync",
     "version": "0.1.0",
     "minAppVersion": "1.11.0",
-    "description": "Native Obsidian plugin for S3 synchronization with one-way, fetch-once strategy.",
+    "description": "Pull S3 notes into your vault once—never re-download what you already fetched—plus an Agent CLI that syncs without opening Obsidian.",
     "author": "exceedhl",
     "authorUrl": "https://github.com/exceedhl",
     "isDesktopOnly": false

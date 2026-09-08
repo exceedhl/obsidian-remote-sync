@@ -15,6 +15,13 @@ export class ConfigError extends CliError {
     }
 }
 
+export class SyncInProgressError extends ConfigError {
+    constructor(message = 'A sync is already in progress') {
+        super(message);
+        this.name = 'SyncInProgressError';
+    }
+}
+
 export class S3SyncError extends CliError {
     constructor(message: string) {
         super(message, 2);

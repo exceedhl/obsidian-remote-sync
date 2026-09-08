@@ -1,13 +1,19 @@
 import { App, Notice } from 'obsidian';
-import { S3Manager } from './S3Manager';
+import { ObjectStore } from './core/objectStore';
 import { SyncLedger } from './SyncLedger';
 import { ObsidianVaultAdapter } from './adapters/ObsidianVaultAdapter';
 import { SyncEngine as CoreSyncEngine, SyncProgress } from './core/SyncEngine';
 
+export interface PluginSyncConfig {
+    localBasePath: string;
+    prefix?: string;
+    force?: boolean;
+}
+
 export class SyncEngine {
     private readonly core: CoreSyncEngine;
 
-    constructor(app: App, s3: S3Manager, ledger: SyncLedger, config: any) {
+    constructor(app: App, s3: ObjectStore, ledger: SyncLedger, config: PluginSyncConfig) {
         this.core = new CoreSyncEngine(
             new ObsidianVaultAdapter(app),
             s3,
@@ -35,9 +41,10 @@ export class SyncEngine {
     async run(): Promise<void> {
         try {
             await this.core.run();
-        } catch (error: any) {
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
             console.error('S3 Sync Error:', error);
-            new Notice(`S3 Sync Failed: ${error.message}`);
+            new Notice(`S3 Sync Failed: ${message}`);
             throw error;
         }
     }

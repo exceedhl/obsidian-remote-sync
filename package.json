@@ -1,7 +1,7 @@
 {
   "name": "obsidian-s3-remote-sync",
   "version": "0.1.0",
-  "description": "Native Obsidian plugin for S3 synchronization with one-way, fetch-once strategy.",
+  "description": "Pull S3 notes into your Obsidian vault once—never re-download what you already fetched—and let agents run the same sync-once CLI without opening Obsidian.",
   "main": "main.js",
   "bin": {
     "obsidian-s3-sync": "dist/cli.js"

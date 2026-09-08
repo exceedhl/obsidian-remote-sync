@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SyncEngine } from '../src/core/SyncEngine';
 import { SyncLedger } from '../src/core/SyncLedger';
 import { MemoryFs } from './helpers/MemoryFs';
-import { FileSystemSyncError, S3SyncError } from '../src/core/errors';
+import { FileSystemSyncError, S3SyncError, SyncInProgressError } from '../src/core/errors';
 
 describe('SyncEngine (core, fake fs)', () => {
     let fs: MemoryFs;
@@ -22,7 +22,7 @@ describe('SyncEngine (core, fake fs)', () => {
     });
 
     function engine(opts: { force?: boolean; dryRun?: boolean; stopOnError?: boolean } = {}) {
-        return new SyncEngine(fs, s3 as any, ledger, {
+        return new SyncEngine(fs, s3, ledger, {
             localBasePath: 'Inbox',
             prefix: 'notes/',
             force: !!opts.force,
@@ -50,6 +50,7 @@ describe('SyncEngine (core, fake fs)', () => {
         expect(ledger.isSynced('notes/test1.md', 'tag1')).toBe(true);
         expect(fs.files.has('.obsidian/plugins/remote-sync/ledger.json')).toBe(true);
         expect(fs.files.has('.obsidian/plugins/remote-sync/ledger.json.tmp')).toBe(false);
+        expect(fs.files.has('.obsidian/plugins/remote-sync/ledger.json.lock')).toBe(false);
     });
 
     it('skips keys already in the ledger', async () => {
@@ -71,6 +72,7 @@ describe('SyncEngine (core, fake fs)', () => {
         const result = await engine({ dryRun: true }).run();
 
         expect(result.downloaded).toEqual(['Inbox/new.md']);
+        expect(result.dryRun).toBe(true);
         expect(s3.getObject).not.toHaveBeenCalled();
         expect(fs.files.has('Inbox/new.md')).toBe(false);
         expect(fs.files.has('.obsidian/plugins/remote-sync/ledger.json')).toBe(false);
@@ -121,5 +123,72 @@ describe('SyncEngine (core, fake fs)', () => {
             { key: 'notes/bad.md', error: 'AccessDenied', exitCode: 2 },
         ]);
         expect(fs.files.get('Inbox/ok.md')).toBe('ok');
+    });
+
+    it('persists successful records before fail-fast throw', async () => {
+        s3.listObjects.mockResolvedValue([
+            { key: 'notes/ok.md', etag: 't1' },
+            { key: 'notes/bad.md', etag: 't2' },
+        ]);
+        s3.getObject.mockImplementation(async (key: string) => {
+            if (key === 'notes/bad.md') throw new Error('AccessDenied');
+            return 'ok';
+        });
+
+        await expect(engine().run()).rejects.toThrow('AccessDenied');
+        expect(ledger.isSynced('notes/ok.md', 't1')).toBe(true);
+        expect(fs.files.has('.obsidian/plugins/remote-sync/ledger.json')).toBe(true);
+    });
+
+    it('skips prefix folder placeholders and keys not under the prefix path', async () => {
+        s3.listObjects.mockResolvedValue([
+            { key: 'notes/', etag: 'd41' },
+            { key: 'notes-other/x.md', etag: 't0' },
+            { key: 'notes/a.md', etag: 't1' },
+        ]);
+        s3.getObject.mockResolvedValue('ok');
+
+        const result = await engine().run();
+        expect(result.downloaded).toEqual(['Inbox/a.md']);
+        expect(s3.getObject).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses path traversal outside localBasePath', async () => {
+        s3.listObjects.mockResolvedValue([{ key: 'notes/../../outside.md', etag: 't' }]);
+        await expect(engine().run()).rejects.toBeInstanceOf(FileSystemSyncError);
+        await expect(engine({ stopOnError: false }).run()).resolves.toMatchObject({
+            success: false,
+            downloaded: [],
+        });
+        expect(fs.files.has('outside.md')).toBe(false);
+    });
+
+    it('writes binary object bodies without decoding as text', async () => {
+        const bytes = new Uint8Array([0, 1, 2, 255]);
+        s3.listObjects.mockResolvedValue([{ key: 'notes/bin.dat', etag: 't' }]);
+        s3.getObject.mockResolvedValue(bytes);
+
+        await engine().run();
+        expect(fs.files.get('Inbox/bin.dat')).toEqual(bytes);
+    });
+
+    it('refuses to run when a fresh lock exists', async () => {
+        fs.files.set(
+            '.obsidian/plugins/remote-sync/ledger.json.lock',
+            JSON.stringify({ updatedAt: Date.now() })
+        );
+        s3.listObjects.mockResolvedValue([{ key: 'notes/a.md', etag: 't' }]);
+        await expect(engine().run()).rejects.toBeInstanceOf(SyncInProgressError);
+        expect(s3.listObjects).not.toHaveBeenCalled();
+    });
+
+    it('dry-run does not take or require a lock', async () => {
+        fs.files.set(
+            '.obsidian/plugins/remote-sync/ledger.json.lock',
+            JSON.stringify({ updatedAt: Date.now() })
+        );
+        s3.listObjects.mockResolvedValue([{ key: 'notes/a.md', etag: 't' }]);
+        const result = await engine({ dryRun: true }).run();
+        expect(result.downloaded).toEqual(['Inbox/a.md']);
     });
 });

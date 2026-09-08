@@ -1,7 +1,7 @@
-import { FileSystemAdapter } from '../../src/core/fs';
+import { FileContent, SyncFsAdapter, WriteOptions } from '../../src/core/fs';
 
-export class MemoryFs implements FileSystemAdapter {
-    files = new Map<string, string>();
+export class MemoryFs implements SyncFsAdapter {
+    files = new Map<string, FileContent>();
     dirs = new Set<string>();
 
     async exists(p: string): Promise<boolean> {
@@ -11,10 +11,13 @@ export class MemoryFs implements FileSystemAdapter {
     async read(p: string): Promise<string> {
         const value = this.files.get(p);
         if (value === undefined) throw new Error(`ENOENT: ${p}`);
-        return value;
+        return typeof value === 'string' ? value : new TextDecoder().decode(value);
     }
 
-    async write(p: string, content: string): Promise<void> {
+    async write(p: string, content: FileContent, options?: WriteOptions): Promise<void> {
+        if (options?.exclusive && (this.files.has(p) || this.dirs.has(p))) {
+            throw new Error(`EEXIST: ${p}`);
+        }
         this.files.set(p, content);
     }
 
@@ -32,5 +35,11 @@ export class MemoryFs implements FileSystemAdapter {
 
     async isDirectory(p: string): Promise<boolean> {
         return this.dirs.has(p);
+    }
+
+    async remove(p: string): Promise<void> {
+        if (!this.files.has(p) && !this.dirs.has(p)) throw new Error(`ENOENT: ${p}`);
+        this.files.delete(p);
+        this.dirs.delete(p);
     }
 }

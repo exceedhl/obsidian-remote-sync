@@ -1,6 +1,7 @@
-import { S3Manager } from '../S3Manager';
+import { ObjectStore } from './objectStore';
 import { SyncLedger } from './SyncLedger';
-import { FileSystemAdapter, normalizeVaultPath } from './fs';
+import { safeDownloadPath, stripS3Prefix, SyncFsAdapter } from './fs';
+import { acquireSyncLock, lockPathForLedger } from './lock';
 import { CliError, errorMessage, FileSystemSyncError, S3SyncError } from './errors';
 
 export interface SyncEngineOptions {
@@ -23,6 +24,7 @@ export interface SyncResult {
     skippedCount: number;
     failed: SyncFailure[];
     success: boolean;
+    dryRun?: boolean;
 }
 
 export interface SyncProgress {
@@ -38,8 +40,8 @@ export type SyncProgressHandler = (event: SyncProgress) => void;
 
 export class SyncEngine {
     constructor(
-        private readonly fs: FileSystemAdapter,
-        private readonly s3: S3Manager,
+        private readonly fs: SyncFsAdapter,
+        private readonly s3: ObjectStore,
         private readonly ledger: SyncLedger,
         private readonly options: SyncEngineOptions,
         private readonly onProgress?: SyncProgressHandler
@@ -51,8 +53,21 @@ export class SyncEngine {
             skippedCount: 0,
             failed: [],
             success: true,
+            dryRun: !!this.options.dryRun,
         };
 
+        const releaseLock = this.options.dryRun
+            ? async () => { /* dry-run does not take a lock */ }
+            : await acquireSyncLock(this.fs, lockPathForLedger(this.ledger.getPath()));
+
+        try {
+            return await this.runLocked(result);
+        } finally {
+            await releaseLock();
+        }
+    }
+
+    private async runLocked(result: SyncResult): Promise<SyncResult> {
         let objects: { key: string; etag: string }[];
         try {
             objects = await this.s3.listObjects();
@@ -63,11 +78,10 @@ export class SyncEngine {
         const stopOnError = this.options.stopOnError !== false;
 
         for (const obj of objects) {
-            let relativePath = obj.key;
-            if (this.options.prefix && relativePath.startsWith(this.options.prefix)) {
-                relativePath = relativePath.slice(this.options.prefix.length);
+            const relativePath = stripS3Prefix(obj.key, this.options.prefix);
+            if (relativePath === null || relativePath === '' || relativePath.endsWith('/')) {
+                continue;
             }
-            if (relativePath.startsWith('/')) relativePath = relativePath.slice(1);
 
             if (!this.options.force && this.ledger.isSynced(obj.key, obj.etag)) {
                 result.skippedCount++;
@@ -75,7 +89,20 @@ export class SyncEngine {
                 continue;
             }
 
-            const localPath = normalizeVaultPath(`${this.options.localBasePath}/${relativePath}`);
+            let localPath: string | null;
+            try {
+                localPath = safeDownloadPath(this.options.localBasePath, relativePath);
+            } catch (error: unknown) {
+                const failure = this.recordFailure(result, obj.key, error);
+                this.onProgress?.({ type: 'fail', key: obj.key, message: failure.error });
+                if (stopOnError) {
+                    await this.persistLedger();
+                    throw new FileSystemSyncError(failure.error);
+                }
+                continue;
+            }
+
+            if (localPath === null) continue;
 
             if (this.options.dryRun) {
                 result.downloaded.push(localPath);
@@ -95,15 +122,10 @@ export class SyncEngine {
                 result.downloaded.push(localPath);
                 this.onProgress?.({ type: 'download', key: obj.key, localPath });
             } catch (error: unknown) {
-                const failure = {
-                    key: obj.key,
-                    error: errorMessage(error),
-                    exitCode: error instanceof CliError ? error.exitCode : 3,
-                };
-                result.failed.push(failure);
-                result.success = false;
+                const failure = this.recordFailure(result, obj.key, error);
                 this.onProgress?.({ type: 'fail', key: obj.key, message: failure.error });
                 if (stopOnError) {
+                    await this.persistLedger();
                     throw error instanceof S3SyncError || error instanceof FileSystemSyncError
                         ? error
                         : new FileSystemSyncError(failure.error);
@@ -112,11 +134,7 @@ export class SyncEngine {
         }
 
         if (!this.options.dryRun) {
-            try {
-                await this.ledger.save();
-            } catch (error: unknown) {
-                throw new FileSystemSyncError(errorMessage(error));
-            }
+            await this.persistLedger();
         }
 
         this.onProgress?.({
@@ -128,7 +146,26 @@ export class SyncEngine {
         return result;
     }
 
-    private async getObject(key: string): Promise<string> {
+    private recordFailure(result: SyncResult, key: string, error: unknown): SyncFailure {
+        const failure = {
+            key,
+            error: errorMessage(error),
+            exitCode: error instanceof CliError ? error.exitCode : 3,
+        };
+        result.failed.push(failure);
+        result.success = false;
+        return failure;
+    }
+
+    private async persistLedger(): Promise<void> {
+        try {
+            await this.ledger.save();
+        } catch (error: unknown) {
+            throw new FileSystemSyncError(errorMessage(error));
+        }
+    }
+
+    private async getObject(key: string): Promise<string | Uint8Array> {
         try {
             return await this.s3.getObject(key);
         } catch (error: unknown) {
