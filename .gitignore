@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.obsidian/
+.gemini/
+.agent/
+.env
+__pycache__/
+*.pyc
+
+# Obsidian runtime state written into this folder because the vault
+# plugin dir is a symlink to this repo. Do not commit.
+/main.js
+/data.json
+/ledger.json
+/cli.js

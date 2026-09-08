@@ -1,0 +1,10 @@
+{
+    "id": "obsidian-s3-remote-sync",
+    "name": "S3 Remote Sync",
+    "version": "0.1.0",
+    "minAppVersion": "1.11.0",
+    "description": "Native Obsidian plugin for S3 synchronization with one-way, fetch-once strategy.",
+    "author": "exceedhl",
+    "authorUrl": "https://github.com/exceedhl",
+    "isDesktopOnly": false
+}
