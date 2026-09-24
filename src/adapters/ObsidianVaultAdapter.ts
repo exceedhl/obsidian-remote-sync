@@ -33,6 +33,12 @@ export class ObsidianVaultAdapter implements SyncFsAdapter {
     }
 
     async rename(from: string, to: string): Promise<void> {
+        // Obsidian's adapter.rename refuses to overwrite an existing destination
+        // ("Destination file already exists!"), unlike POSIX fs.rename.
+        // Remove the target first to preserve overwrite semantics.
+        if (from !== to && await this.app.vault.adapter.exists(to)) {
+            await this.app.vault.adapter.remove(to);
+        }
         await this.app.vault.adapter.rename(from, to);
     }
 
